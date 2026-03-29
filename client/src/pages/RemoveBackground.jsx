@@ -3,7 +3,7 @@ import React, { useState } from 'react'
 
 const RemoveBackground = () => {
 
-   // Tip: When handling files instead of text, it's best practice to initialize state as 'null' instead of an empty string ''
+   
    const [input, setInput] = useState(null)
     
    const onSubmitHandler = async (e) => {
