@@ -7,7 +7,7 @@ const BlogTitles = () => {
     'Education', 'Travel', 'Food']
   
   
-    const [selectedCategory, setSelectedCategory] = useState('blogCategories[0]')
+    const [selectedCategory, setSelectedCategory] = useState('General')
     const [input, setInput]=  useState('')
   
     const onSubmitHandler = async(e)=>{
