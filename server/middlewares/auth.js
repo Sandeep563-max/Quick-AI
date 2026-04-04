@@ -10,7 +10,7 @@ export const auth = async (req, res, next) => {
 
         const user = await clerkClient.users.getUser(userId);
 
-        const currentPlan = user.publicMetadata.plan || user.privateMetadata.plan || 'free';
+        const currentPlan = user.publicMetadata.plan || 'free';
         const hasPremiumPlan = currentPlan === 'premium';
 
         if (!hasPremiumPlan && user.privateMetadata.free_usage) {
@@ -24,7 +24,6 @@ export const auth = async (req, res, next) => {
 
         req.plan = hasPremiumPlan ? 'premium' : 'free';
         next();
-
     } catch (error) {
         console.error("🚨 Auth Error:", error.message);
         res.status(500).json({ success: false, message: error.message });
