@@ -1,14 +1,15 @@
+
 import OpenAI from "openai";
 import { clerkClient, getAuth } from "@clerk/express";
 import sql from "../configs/db.js";
-import { v2 as cloudinary } from 'cloudinary';
+import { v2 as cloudinary } from "cloudinary";
 import axios from "axios";
-import fs from 'fs';
+import fs from "fs";
 
 // Initialize OpenAI SDK pointed to Groq's endpoint
 const AI = new OpenAI({
     apiKey: process.env.GROQ_API_KEY,
-    baseURL: "https://api.groq.com/openai/v1"
+    baseURL: "https://api.groq.com/openai/v1",
 });
 
 export const generateArticle = async (req, res) => {
@@ -18,12 +19,15 @@ export const generateArticle = async (req, res) => {
         const plan = req.plan;
         const free_usage = req.free_usage;
 
-        if (plan !== 'premium' && free_usage >= 10) {
-            return res.json({ success: false, message: "Limit reached. Upgrade to continue." });
+        if (plan !== "premium" && free_usage >= 10) {
+            return res.json({
+                success: false,
+                message: "Limit reached. Upgrade to continue.",
+            });
         }
 
         const response = await AI.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
+            model: "openai/gpt-oss-120b",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
             max_tokens: parseInt(length) || 500,
@@ -31,30 +35,36 @@ export const generateArticle = async (req, res) => {
 
         const content = response.choices[0].message.content;
 
-        await sql`INSERT INTO creations (user_id, prompt, content, type) 
-                  VALUES (${userId}, ${prompt}, ${content}, 'article')`;
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type)
+            VALUES (${userId}, ${prompt}, ${content}, 'article')
+        `;
 
-        if (plan !== 'premium') {
+        if (plan !== "premium") {
             await clerkClient.users.updateUserMetadata(userId, {
                 privateMetadata: {
-                    free_usage: (Number(free_usage) || 0) + 1
-                }
+                    free_usage: (Number(free_usage) || 0) + 1,
+                },
             });
         }
 
         res.json({ success: true, content });
-
     } catch (error) {
         if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+            return res.status(429).json({
+                success: false,
+                message: "Rate limit reached. Please wait 30 seconds.",
             });
         }
-        console.error("Chef Error:", error.message);
-        res.status(500).json({ success: false, message: error.message }); 
+
+        console.error("Article Generation Error:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message,
+        });
     }
-}
+};
 
 export const generateBlogTitle = async (req, res) => {
     try {
@@ -63,43 +73,52 @@ export const generateBlogTitle = async (req, res) => {
         const plan = req.plan;
         const free_usage = req.free_usage;
 
-        if (plan !== 'premium' && free_usage >= 10) {
-            return res.json({ success: false, message: "Limit reached. Upgrade to continue." });
+        if (plan !== "premium" && free_usage >= 10) {
+            return res.json({
+                success: false,
+                message: "Limit reached. Upgrade to continue.",
+            });
         }
 
         const response = await AI.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
+            model: "openai/gpt-oss-120b",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
-            max_tokens: 100
+            max_tokens: 100,
         });
 
         const content = response.choices[0].message.content;
 
-        await sql`INSERT INTO creations (user_id, prompt, content, type) 
-                  VALUES (${userId}, ${prompt}, ${content}, 'blog-title')`;
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type)
+            VALUES (${userId}, ${prompt}, ${content}, 'blog-title')
+        `;
 
-        if (plan !== 'premium') {
+        if (plan !== "premium") {
             await clerkClient.users.updateUserMetadata(userId, {
                 privateMetadata: {
-                    free_usage: (Number(free_usage) || 0) + 1
-                }
+                    free_usage: (Number(free_usage) || 0) + 1,
+                },
             });
         }
 
         res.json({ success: true, content });
-
     } catch (error) {
         if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+            return res.status(429).json({
+                success: false,
+                message: "Rate limit reached. Please wait 30 seconds.",
             });
         }
-        console.error("Chef Error:", error.message);
-        res.status(500).json({ success: false, message: error.message }); 
+
+        console.error("Blog Title Generation Error:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message,
+        });
     }
-}
+};
 
 export const generateImage = async (req, res) => {
     try {
@@ -107,37 +126,91 @@ export const generateImage = async (req, res) => {
         const { prompt, publish } = req.body;
         const plan = req.plan;
 
-        if (plan !== 'premium') {
-            return res.json({ success: false, message: "This feature is only available for premium subscriptions" });
-        }
-        
-        const formData = new FormData();
-        formData.append('prompt', prompt);
-        const { data } = await axios.post("https://clipdrop-api.co/text-to-image/v1", formData , {
-            headers: {"x-api-key": process.env.CLIPDROP_API_KEY}, 
-            responseType: "arraybuffer"
-        });
-
-        const base64Image = `data:image/png;base64,${Buffer.from(data,'binary').toString('base64')}`;
-        
-        const {secure_url} = await cloudinary.uploader.upload(base64Image);
-       
-        await sql`INSERT INTO creations (user_id, prompt, content, type, publish) 
-                  VALUES (${userId}, ${prompt}, ${secure_url}, 'image' ,${publish ?? false})`;
-
-        res.json({ success: true, content: secure_url });
-
-    } catch (error) {
-        if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+        if (plan !== "premium") {
+            return res.json({
+                success: false,
+                message: "This feature is only available for premium subscriptions",
             });
         }
-        console.error("Chef Error:", error.message);
-        res.status(500).json({ success: false, message: error.message }); 
+
+        if (!process.env.CLIPDROP_API_KEY) {
+            throw new Error(
+                "CLIPDROP_API_KEY is missing from the server environment."
+            );
+        }
+
+        const formData = new FormData();
+        formData.append("prompt", prompt);
+
+        const { data } = await axios.post(
+            "https://clipdrop-api.co/text-to-image/v1",
+            formData,
+            {
+                headers: {
+                    "x-api-key": process.env.CLIPDROP_API_KEY,
+                },
+                responseType: "arraybuffer",
+            }
+        );
+
+        const base64Image = `data:image/png;base64,${Buffer.from(
+            data
+        ).toString("base64")}`;
+
+        const { secure_url } = await cloudinary.uploader.upload(base64Image);
+
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type, publish)
+            VALUES (${userId}, ${prompt}, ${secure_url}, 'image', ${publish ?? false})
+        `;
+
+        res.json({ success: true, content: secure_url });
+    } catch (error) {
+        const externalStatus = error.response?.status;
+
+        // Log the external service's response for diagnosis.
+        let externalResponse = null;
+
+        if (error.response?.data) {
+            const responseData = error.response.data;
+
+            try {
+                if (Buffer.isBuffer(responseData)) {
+                    externalResponse = responseData.toString("utf8");
+                } else if (responseData instanceof ArrayBuffer) {
+                    externalResponse = Buffer.from(responseData).toString("utf8");
+                } else if (typeof responseData === "string") {
+                    externalResponse = responseData;
+                } else {
+                    externalResponse = JSON.stringify(responseData);
+                }
+            } catch {
+                externalResponse = "[Could not decode external response]";
+            }
+        }
+
+        console.error("Image Generation Error:", {
+            message: error.message,
+            status: externalStatus ?? error.status ?? null,
+            response: externalResponse,
+        });
+
+        if (externalStatus === 429 || error.status === 429) {
+            return res.status(429).json({
+                success: false,
+                message: "Rate limit reached. Please wait 30 seconds.",
+            });
+        }
+
+        // Return a safe diagnostic message without exposing API credentials.
+        res.status(500).json({
+            success: false,
+            message: externalStatus
+                ? `External image API returned status ${externalStatus}. Check the backend terminal for details.`
+                : error.message || "Image generation failed.",
+        });
     }
-}
+};
 
 export const removeImageBackground = async (req, res) => {
     try {
@@ -145,35 +218,44 @@ export const removeImageBackground = async (req, res) => {
         const image = req.file;
         const plan = req.plan;
 
-        if (plan !== 'premium') {
-            return res.json({ success: false, message: "This feature is only available for premium subscriptions" });
-        }
-        
-        const {secure_url} = await cloudinary.uploader.upload(image.path, {
-            transformation: [
-                {
-                    effect: 'background_removal',
-                    background_removal: "cloudinary_ai"
-                }
-            ]
-        });
-       
-        await sql`INSERT INTO creations (user_id, prompt, content, type) 
-                  VALUES (${userId}, 'Remove background from image' , ${secure_url}, 'image')`;
-
-        res.json({ success: true, content: secure_url });
-
-    } catch (error) {
-        if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+        if (plan !== "premium") {
+            return res.json({
+                success: false,
+                message: "This feature is only available for premium subscriptions",
             });
         }
-        console.error("Chef Error:", error.message);
-        res.status(500).json({ success: false, message: error.message }); 
+
+        if (!image) {
+            return res.status(400).json({
+                success: false,
+                message: "No image file was uploaded.",
+            });
+        }
+
+        const { secure_url } = await cloudinary.uploader.upload(image.path, {
+            transformation: [
+                {
+                    effect: "background_removal",
+                    background_removal: "cloudinary_ai",
+                },
+            ],
+        });
+
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type)
+            VALUES (${userId}, 'Remove background from image', ${secure_url}, 'image')
+        `;
+
+        res.json({ success: true, content: secure_url });
+    } catch (error) {
+        console.error("Background Removal Error:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message,
+        });
     }
-}
+};
 
 export const removeImageObject = async (req, res) => {
     try {
@@ -182,76 +264,93 @@ export const removeImageObject = async (req, res) => {
         const image = req.file;
         const plan = req.plan;
 
-        if (plan !== 'premium') {
-            return res.json({ success: false, message: "This feature is only available for premium subscriptions" });
-        }
-        
-        const {public_id} = await cloudinary.uploader.upload(image.path);
-            
-        const imageUrl = cloudinary.url(public_id, {
-            transformation: [{effect: `gen_remove:${object}`}],
-            resource_type: 'image'
-        });
-       
-        const promptMessage = `Remove ${object} from image`;
-        await sql`INSERT INTO creations (user_id, prompt, content, type) 
-                  VALUES (${userId}, ${promptMessage} , ${imageUrl}, 'image')`;
-
-        res.json({ success: true, content: imageUrl });
-
-    } catch (error) {
-        if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+        if (plan !== "premium") {
+            return res.json({
+                success: false,
+                message: "This feature is only available for premium subscriptions",
             });
         }
-        console.error("Chef Error:", error.message);
-        res.status(500).json({ success: false, message: error.message }); 
+
+        if (!image) {
+            return res.status(400).json({
+                success: false,
+                message: "No image file was uploaded.",
+            });
+        }
+
+        const { public_id } = await cloudinary.uploader.upload(image.path);
+
+        const imageUrl = cloudinary.url(public_id, {
+            transformation: [{ effect: `gen_remove:${object}` }],
+            resource_type: "image",
+        });
+
+        const promptMessage = `Remove ${object} from image`;
+
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type)
+            VALUES (${userId}, ${promptMessage}, ${imageUrl}, 'image')
+        `;
+
+        res.json({ success: true, content: imageUrl });
+    } catch (error) {
+        console.error("Object Removal Error:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message,
+        });
     }
-}
+};
 
 export const resumeReview = async (req, res) => {
     let parser = null;
+
     try {
         const { userId } = getAuth(req);
         const resume = req.file;
         const plan = req.plan;
 
-        // 1. Check plan
-        if (plan !== 'premium') {
-            return res.json({ success: false, message: "This feature is only available for premium subscriptions" });
+        if (plan !== "premium") {
+            return res.json({
+                success: false,
+                message: "This feature is only available for premium subscriptions",
+            });
         }
-        
-        // 2. Ensure file actually reached the server
+
         if (!resume) {
-            return res.json({ success: false, message: "No resume file was received by the server." });
+            return res.json({
+                success: false,
+                message: "No resume file was received by the server.",
+            });
         }
 
-        // 3. Check file size
         if (resume.size > 5 * 1024 * 1024) {
-            return res.json({ success: false, message: "Resume file exceeds allowed size (5MB)." });
+            return res.json({
+                success: false,
+                message: "Resume file exceeds allowed size (5MB).",
+            });
         }
 
-        // 4. Safely check file path
         if (!resume.path || !fs.existsSync(resume.path)) {
             throw new Error(`File not found at path: ${resume.path}`);
         }
+
         const dataBuffer = fs.readFileSync(resume.path);
 
-        // 5. Corrected pdf-parse v2 instantiation syntax
-        const pdfModule = await import('pdf-parse');
+        const pdfModule = await import("pdf-parse");
         const PDFParse = pdfModule.PDFParse || pdfModule.default?.PDFParse;
 
         parser = new PDFParse({ data: dataBuffer });
         const pdfData = await parser.getText();
 
-        if (!pdfData.text || pdfData.text.trim() === '') {
-            throw new Error("Could not extract any text. The PDF might be scanned or image-based.");
+        if (!pdfData.text || pdfData.text.trim() === "") {
+            throw new Error(
+                "Could not extract any text. The PDF might be scanned or image-based."
+            );
         }
 
-        // 6. Generate AI response with structured Markdown template
-        const prompt = `Act as an expert technical recruiter. Review the following resume and provide highly constructive feedback. 
+        const prompt = `Act as an expert technical recruiter. Review the following resume and provide highly constructive feedback.
 You MUST format your response exactly like this template using Markdown:
 
 **Overall Impression:**
@@ -271,46 +370,55 @@ You MUST format your response exactly like this template using Markdown:
 * (Actionable suggestion 2)
 
 Resume content:\n\n${pdfData.text}`;
-                
+
         const response = await AI.chat.completions.create({
-            model: "llama-3.3-70b-versatile",
+            model: "openai/gpt-oss-120b",
             messages: [{ role: "user", content: prompt }],
             temperature: 0.7,
             max_tokens: 1000,
         });
 
         const content = response.choices[0].message.content;
-       
-        // 7. Save to database
-        await sql`INSERT INTO creations (user_id, prompt, content, type) 
-                  VALUES (${userId}, 'Review the uploaded resume' , ${content}, 'resume-review')`;
 
-        // 8. Cleanup parser memory and temp file
+        await sql`
+            INSERT INTO creations (user_id, prompt, content, type)
+            VALUES (${userId}, 'Review the uploaded resume', ${content}, 'resume-review')
+        `;
+
         if (parser) {
             await parser.destroy();
         }
+
         if (resume.path && fs.existsSync(resume.path)) {
             fs.unlinkSync(resume.path);
         }
 
         res.json({ success: true, content });
-
     } catch (error) {
         if (parser) {
-            try { await parser.destroy(); } catch (e) {}
+            try {
+                await parser.destroy();
+            } catch {
+                // Ignore parser cleanup errors.
+            }
         }
+
         if (req.file?.path && fs.existsSync(req.file.path)) {
             fs.unlinkSync(req.file.path);
         }
 
         if (error.status === 429) {
-            return res.status(429).json({ 
-                success: false, 
-                message: "Rate limit reached. Please wait 30 seconds." 
+            return res.status(429).json({
+                success: false,
+                message: "Rate limit reached. Please wait 30 seconds.",
             });
         }
-        
-        console.error("🚨 Backend Review Error:", error);
-        res.status(500).json({ success: false, message: error.message || "Failed to parse PDF." }); 
+
+        console.error("Backend Resume Review Error:", error.message);
+
+        res.status(500).json({
+            success: false,
+            message: error.message || "Failed to parse PDF.",
+        });
     }
-}
+};
