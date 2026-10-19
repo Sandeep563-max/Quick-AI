@@ -5,6 +5,7 @@ import sql from "../configs/db.js";
 import { v2 as cloudinary } from "cloudinary";
 import axios from "axios";
 import fs from "fs";
+import { resumeReviewSchema, parseReviewResponse, reviewToMarkdown } from "../schemas/resumeReview.js";
 
 // Initialize OpenAI SDK pointed to Groq's endpoint
 const AI = new OpenAI({
@@ -350,36 +351,95 @@ export const resumeReview = async (req, res) => {
             );
         }
 
-        const prompt = `Act as an expert technical recruiter. Review the following resume and provide highly constructive feedback.
-You MUST format your response exactly like this template using Markdown:
+        const extractedText = pdfData.text.trim();
 
-**Overall Impression:**
-(Provide a brief 2-3 sentence summary of the resume's quality here)
+        // --- Request structured JSON review from Groq ---
+        const structuredPrompt = `Act as an expert technical recruiter. Review the following resume and provide highly constructive feedback.
 
-**Strengths:**
-* (Bullet point 1)
-* (Bullet point 2)
-* (Bullet point 3)
+You MUST respond with ONLY a valid JSON object (no markdown, no code fences, no extra text) with exactly this structure:
+{
+  "overallImpression": "A brief 2-3 sentence summary of the resume's quality",
+  "strengths": ["strength 1", "strength 2", "strength 3"],
+  "weaknesses": ["weakness 1", "weakness 2"],
+  "suggestions": ["actionable suggestion 1", "actionable suggestion 2"]
+}
 
-**Weaknesses:**
-* (Bullet point 1)
-* (Bullet point 2)
+Requirements:
+- overallImpression must be at least 10 characters
+- Include at least 1 strength, 1 weakness, and 1 suggestion
+- Each item must be at least 5 characters
+- Respond with ONLY the JSON object, nothing else
 
-**Specific Suggestions:**
-* (Actionable suggestion 1)
-* (Actionable suggestion 2)
+Resume content:
+${extractedText}`;
 
-Resume content:\n\n${pdfData.text}`;
+        let validatedReview = null;
+        let lastError = null;
 
-        const response = await AI.chat.completions.create({
-            model: "openai/gpt-oss-120b",
-            messages: [{ role: "user", content: prompt }],
-            temperature: 0.7,
-            max_tokens: 1000,
-        });
+        // Attempt up to 2 tries for valid structured JSON
+        for (let attempt = 0; attempt < 2; attempt++) {
+            try {
+                const response = await AI.chat.completions.create({
+                    model: "openai/gpt-oss-120b",
+                    messages: [{ role: "user", content: structuredPrompt }],
+                    temperature: attempt === 0 ? 0.5 : 0.3,
+                    max_tokens: 1500,
+                });
 
-        const content = response.choices[0].message.content;
+                const rawContent = response.choices[0].message.content;
+                const parsed = parseReviewResponse(rawContent);
 
+                if (!parsed) {
+                    lastError = new Error('Could not parse AI response as JSON');
+                    continue;
+                }
+
+                validatedReview = resumeReviewSchema.parse(parsed);
+                break; // Success
+            } catch (err) {
+                lastError = err;
+                continue;
+            }
+        }
+
+        if (!validatedReview) {
+            throw new Error(
+                `Failed to generate a valid structured review after retries: ${lastError?.message || 'Unknown error'}`
+            );
+        }
+
+        // Convert validated review to Markdown for frontend compatibility
+        const content = reviewToMarkdown(validatedReview);
+
+        // --- Create resume record ---
+        const [resumeRecord] = await sql`
+            INSERT INTO resumes (user_id, filename, extracted_text, review_content, ingestion_status)
+            VALUES (${userId}, ${resume.originalname || 'resume.pdf'}, ${extractedText}, ${JSON.stringify(validatedReview)}, 'processing')
+            RETURNING id
+        `;
+
+        const resumeId = resumeRecord.id;
+
+        // --- Chunk text and generate embeddings ---
+        let ingestionStatus = 'completed';
+        try {
+            const { processAndStoreChunks } = await import('../services/ragService.js');
+            await processAndStoreChunks(resumeId, userId, extractedText);
+        } catch (chunkError) {
+            console.error(
+                `Resume RAG ingestion failed for resume ${resumeId} (user: ${userId}): ${chunkError.message}`,
+                chunkError.stack || chunkError
+            );
+            ingestionStatus = 'failed';
+        }
+
+        // Update ingestion status (ensures resume is marked 'failed' on embedding failure)
+        await sql`
+            UPDATE resumes SET ingestion_status = ${ingestionStatus}, updated_at = NOW()
+            WHERE id = ${resumeId}
+        `;
+
+        // --- Preserve existing creations history ---
         await sql`
             INSERT INTO creations (user_id, prompt, content, type)
             VALUES (${userId}, 'Review the uploaded resume', ${content}, 'resume-review')
@@ -393,7 +453,12 @@ Resume content:\n\n${pdfData.text}`;
             fs.unlinkSync(resume.path);
         }
 
-        res.json({ success: true, content });
+        res.json({
+            success: true,
+            content,
+            resume_id: resumeId,
+            ingestion_status: ingestionStatus,
+        });
     } catch (error) {
         if (parser) {
             try {
